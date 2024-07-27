@@ -13,6 +13,7 @@ from .tensor_data import (
     broadcast_index,
     index_to_position,
     to_index,
+    to_index_strides,
 )
 from .tensor_functions import Function
 
@@ -20,6 +21,7 @@ from .tensor_functions import Function
 # If you get an error, read the docs for NUMBA as to what is allowed
 # in these functions.
 to_index = njit(inline="always")(to_index)
+to_index_strides = njit(inline="always")(to_index_strides)
 index_to_position = njit(inline="always")(index_to_position)
 broadcast_index = njit(inline="always")(broadcast_index)
 
@@ -80,8 +82,18 @@ def _tensor_conv1d(
     s1 = input_strides
     s2 = weight_strides
 
-    # TODO: Implement for Task 4.1.
-    raise NotImplementedError("Need to implement for Task 4.1")
+    for i in prange(len(out)):
+        dot = 0
+        out_index = np.zeros_like(out_shape)
+        to_index_strides(i + 0, out_shape, out_strides, out_index)
+        for c in range(in_channels):
+            for k in range(kw):
+                w = out_index[-1] - k if reverse else out_index[-1] + k
+                if w >= 0 and w < width:
+                    weight_i = k * s2[-1] + c * s2[-2] + out_index[-2] * s2[-3]
+                    input_i = w * s1[-1] + c * s1[-2] + out_index[0] * s1[0]
+                    dot += weight[weight_i] * input[input_i] 
+        out[i] = dot
 
 
 tensor_conv1d = njit(parallel=True)(_tensor_conv1d)
@@ -206,8 +218,23 @@ def _tensor_conv2d(
     s10, s11, s12, s13 = s1[0], s1[1], s1[2], s1[3]
     s20, s21, s22, s23 = s2[0], s2[1], s2[2], s2[3]
 
-    # TODO: Implement for Task 4.2.
-    raise NotImplementedError("Need to implement for Task 4.2")
+    for i in prange(len(out)):
+        dot = 0
+        out_index = np.zeros_like(out_shape)
+        to_index_strides(i + 0, out_shape, out_strides, out_index)
+
+        for c in range(in_channels):
+            for h in range(kh):
+                for w in range(kw):
+                    th = out_index[-2] - h if reverse else out_index[-2] + h
+                    tw = out_index[-1] - w if reverse else out_index[-1] + w
+
+                    if tw >= 0 and tw < width and th >= 0 and th < height:
+                        weight_i = w * s23 + h * s22 + c * s21 + out_index[-3] * s20
+                        input_i = tw * s13 + th * s12 + c * s11 + out_index[0] * s10
+
+                        dot += weight[weight_i] * input[input_i]
+        out[i] = dot
 
 
 tensor_conv2d = njit(parallel=True, fastmath=True)(_tensor_conv2d)

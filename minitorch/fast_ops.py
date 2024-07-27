@@ -11,6 +11,7 @@ from .tensor_data import (
     index_to_position,
     shape_broadcast,
     to_index,
+    to_index_strides,
 )
 from .tensor_ops import MapProto, TensorOps
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 # If you get an error, read the docs for NUMBA as to what is allowed
 # in these functions.
 to_index = njit(inline="always")(to_index)
+to_index_strides = njit(inline="always")(to_index_strides)
 index_to_position = njit(inline="always")(index_to_position)
 broadcast_index = njit(inline="always")(broadcast_index)
 
@@ -159,7 +161,18 @@ def tensor_map(
         in_shape: Shape,
         in_strides: Strides,
     ) -> None:
-        raise NotImplementedError("Need to include this file from past assignment.")
+        aligned = np.array_equal(out_strides, in_strides) and np.array_equal(out_shape, in_shape)
+        for i in prange(len(out)):
+            if aligned:
+                out[i] = fn(in_storage[i])
+            else:
+                out_index = np.zeros_like(out_shape)
+                to_index_strides(i, out_shape, out_strides, out_index)
+
+                in_index = np.zeros_like(in_shape)
+                broadcast_index(out_index, out_shape, in_shape, in_index)
+                in_i = int(index_to_position(in_index, in_strides))
+                out[i] = fn(in_storage[in_i])
 
     return njit(parallel=True)(_map)  # type: ignore
 
@@ -197,7 +210,23 @@ def tensor_zip(
         b_shape: Shape,
         b_strides: Strides,
     ) -> None:
-        raise NotImplementedError("Need to include this file from past assignment.")
+        aligned = np.array_equal(out_strides, a_strides) and np.array_equal(out_strides, b_strides) and np.array_equal(out_shape, a_shape) and np.array_equal(out_shape, b_shape)
+        for i in prange(len(out)):
+            if aligned:
+                out[i] = fn(a_storage[i], b_storage[i])
+            else:
+                out_index = np.zeros_like(out_shape)
+                to_index_strides(i, out_shape, out_strides, out_index)
+
+                a_index = np.zeros_like(a_shape)
+                broadcast_index(out_index, out_shape, a_shape, a_index)
+                a_i = int(index_to_position(a_index, a_strides))
+
+                b_index = np.zeros_like(b_shape)
+                broadcast_index(out_index, out_shape, b_shape, b_index)
+                b_i = int(index_to_position(b_index, b_strides))
+
+                out[i] = fn(a_storage[a_i], b_storage[b_i])
 
     return njit(parallel=True)(_zip)  # type: ignore
 
@@ -230,7 +259,21 @@ def tensor_reduce(
         a_strides: Strides,
         reduce_dim: int,
     ) -> None:
-        raise NotImplementedError("Need to include this file from past assignment.")
+        for i in prange(len(out)):
+            idx = np.zeros_like(out_shape)
+            # hack to prevent overwriting parallel loop index, numba bug with inlining presumably
+            i_copy = 0
+            i_copy = i_copy + i
+            to_index_strides(i_copy, out_shape, out_strides, idx)
+
+            idx[reduce_dim] = 0
+            a_i = int(index_to_position(idx, a_strides))
+            t = a_storage[a_i]
+
+            for j in range(1, a_shape[reduce_dim]):
+                a_i += a_strides[reduce_dim]
+                t = fn(t, a_storage[a_i])
+            out[i] = t
 
     return njit(parallel=True)(_reduce)  # type: ignore
 
@@ -278,8 +321,30 @@ def _tensor_matrix_multiply(
     """
     a_batch_stride = a_strides[0] if a_shape[0] > 1 else 0
     b_batch_stride = b_strides[0] if b_shape[0] > 1 else 0
+    a_dims = len(a_shape)
+    b_dims = len(b_shape)
+    out_dims = len(out_shape)
+    a_diff = out_dims - a_dims
+    b_diff = out_dims - b_dims
 
-    raise NotImplementedError("Need to include this file from past assignment.")
+    for i in prange(len(out)):
+        a_i = 0
+        b_i = 0
+        # hack for parallel rewrite bug
+        ordinal = 0 + i
+        for j in range(out_dims):
+            out_idx = ordinal // out_strides[j]
+            ordinal -= out_idx * out_strides[j]
+
+            if j - a_diff >= 0 and j != a_dims - 1:
+                a_i += a_strides[j - a_diff] * min(out_idx, a_shape[j - a_diff] - 1)
+            if j - b_diff >= 0 and j != b_dims - 2:
+                b_i += b_strides[j - b_diff] * min(out_idx, b_shape[j - b_diff] - 1)
+
+        t = 0
+        for j in range(a_shape[-1]):
+            t += a_storage[a_i + j * a_strides[-1]] * b_storage[b_i + j * b_strides[-2]]
+        out[i] = t
 
 
 tensor_matrix_multiply = njit(parallel=True, fastmath=True)(_tensor_matrix_multiply)
